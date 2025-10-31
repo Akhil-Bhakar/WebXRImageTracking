@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>WebXR Image Tracking + Video</title>
+    <title>WebXR Image Tracking + Video (Aligned)</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
     <style>
       body { margin: 0; overflow: hidden; background: #000; }
@@ -10,7 +10,6 @@
     </style>
   </head>
   <body>
-    <!-- Hidden HTML video element -->
     <video id="arVideo" src="video.mp4" loop playsinline muted></video>
 
     <script type="module">
@@ -19,7 +18,6 @@
 
       let camera, scene, renderer;
       let video, videoTexture, videoPlane;
-      let trackedImage = null;
       let refSpace = null;
 
       init();
@@ -39,19 +37,19 @@
         const imgBlob = await imgResponse.blob();
         const imageBitmap = await createImageBitmap(imgBlob);
 
-        // ✅ Add ARButton with image tracking enabled
+        // ✅ Add ARButton with image tracking
         const button = ARButton.createButton(renderer, {
           requiredFeatures: ['image-tracking'],
           trackedImages: [
             {
               image: imageBitmap,
-              widthInMeters: 0.2 // adjust to your printed image width
+              widthInMeters: 0.2061 // real printed width in meters (20.61 cm)
             }
           ]
         });
         document.body.appendChild(button);
 
-        // ✅ Add lighting
+        // ✅ Add light
         const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
         scene.add(light);
 
@@ -59,12 +57,17 @@
         video = document.getElementById('arVideo');
         videoTexture = new THREE.VideoTexture(video);
         const material = new THREE.MeshBasicMaterial({ map: videoTexture });
-        const geometry = new THREE.PlaneGeometry(0.2, 0.1125); // 16:9 aspect ratio
+
+        // Match aspect ratio of 2061 x 1435 (≈1.436)
+        const geometry = new THREE.PlaneGeometry(0.2061, 0.1435);
         videoPlane = new THREE.Mesh(geometry, material);
+
+        // ✅ Rotate to align flat with the marker
+        videoPlane.rotation.x = -Math.PI / 2;
         videoPlane.visible = false;
         scene.add(videoPlane);
 
-        // Handle XR session start
+        // ✅ Handle session
         renderer.xr.addEventListener('sessionstart', () => {
           const session = renderer.xr.getSession();
           session.requestReferenceSpace('local').then(space => refSpace = space);
