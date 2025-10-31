@@ -5,8 +5,8 @@
     <title>WebXR Image Tracking + Video</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
     <style>
-      body { margin: 0; overflow: hidden; }
-      video { display: none; } /* hide HTML video element */
+      body { margin: 0; overflow: hidden; background: #000; }
+      video { display: none; } /* Hide HTML video element */
     </style>
   </head>
   <body>
@@ -17,13 +17,15 @@
       import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.150.0/build/three.module.js';
       import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.150.0/examples/jsm/webxr/ARButton.js';
 
-      let camera, scene, renderer, video, videoTexture, videoPlane;
+      let camera, scene, renderer;
+      let video, videoTexture, videoPlane;
       let trackedImage = null;
+      let refSpace = null;
 
       init();
       animate();
 
-      function init() {
+      async function init() {
         scene = new THREE.Scene();
         camera = new THREE.PerspectiveCamera();
 
@@ -32,22 +34,28 @@
         renderer.xr.enabled = true;
         document.body.appendChild(renderer.domElement);
 
-        // AR Button with image tracking feature
+        // ✅ Load and convert the marker image to ImageBitmap
+        const imgResponse = await fetch('marker.jpg');
+        const imgBlob = await imgResponse.blob();
+        const imageBitmap = await createImageBitmap(imgBlob);
+
+        // ✅ Add ARButton with image tracking enabled
         const button = ARButton.createButton(renderer, {
           requiredFeatures: ['image-tracking'],
           trackedImages: [
             {
-              image: new URL('marker.jpg', window.location).href,
-              widthInMeters: 0.2 // actual width of your printed marker
+              image: imageBitmap,
+              widthInMeters: 0.2 // adjust to your printed image width
             }
           ]
         });
         document.body.appendChild(button);
 
-        // Light
-        scene.add(new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1));
+        // ✅ Add lighting
+        const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
+        scene.add(light);
 
-        // Prepare video element + texture
+        // ✅ Setup video + texture
         video = document.getElementById('arVideo');
         videoTexture = new THREE.VideoTexture(video);
         const material = new THREE.MeshBasicMaterial({ map: videoTexture });
@@ -56,42 +64,44 @@
         videoPlane.visible = false;
         scene.add(videoPlane);
 
-        // Listen for tracking state changes
+        // Handle XR session start
         renderer.xr.addEventListener('sessionstart', () => {
           const session = renderer.xr.getSession();
-          session.addEventListener('trackedevent', (e) => console.log(e)); // debug
+          session.requestReferenceSpace('local').then(space => refSpace = space);
         });
 
-        // Update on tracking results
-        renderer.xr.addEventListener('update', (event) => {
-          const frame = renderer.xr.getFrame();
-          const results = frame.getImageTrackingResults ? frame.getImageTrackingResults() : [];
+        window.addEventListener('resize', () => {
+          renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+      }
+
+      function animate() {
+        renderer.setAnimationLoop(render);
+      }
+
+      function render(timestamp, frame) {
+        if (frame && refSpace) {
+          const results = frame.getImageTrackingResults
+            ? frame.getImageTrackingResults()
+            : [];
+
           for (const result of results) {
             const state = result.trackingState;
-            const refSpace = renderer.xr.getReferenceSpace();
             const pose = frame.getPose(result.imageSpace, refSpace);
 
-            if (state === "tracked" && pose) {
-              trackedImage = result;
+            if (state === 'tracked' && pose) {
               videoPlane.visible = true;
-              const mat = new THREE.Matrix4().fromArray(pose.transform.matrix);
-              videoPlane.matrix = mat;
+              videoPlane.matrix.fromArray(pose.transform.matrix);
               videoPlane.matrixAutoUpdate = false;
               if (video.paused) video.play();
-            } else if (state === "emulated" || state === "untracked") {
+            } else if (state === 'emulated' || state === 'untracked') {
               videoPlane.visible = false;
               video.pause();
             }
           }
-        });
+        }
 
-        window.addEventListener('resize', () => renderer.setSize(window.innerWidth, window.innerHeight));
-      }
-
-      function animate() {
-        renderer.setAnimationLoop(() => {
-          renderer.render(scene, camera);
-        });
+        renderer.render(scene, camera);
       }
     </script>
   </body>
