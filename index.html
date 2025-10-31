@@ -16,37 +16,33 @@
       background: rgba(255,255,255,0.95);
       border-radius: 8px;
       font-weight: 600;
-      display: none; /* shown after AR session starts */
+      display: none;
     }
-    video { display: none; } /* hide the raw <video> element */
-    #msg { position: absolute; left: 8px; top: 8px; color: white; text-shadow: 0 0 6px rgba(0,0,0,0.8); z-index: 10; }
+    #msg {
+      position: absolute;
+      left: 8px; top: 8px;
+      color: white;
+      text-shadow: 0 0 6px rgba(0,0,0,0.8);
+      z-index: 10;
+    }
+    video { display: none; }
   </style>
 </head>
 <body>
   <div id="msg">Point camera at the printed marker</div>
   <button id="enableAudio">Enable audio</button>
-
-  <!-- Hidden video element. Keep muted for autoplay; we'll unmute on user gesture. -->
   <video id="arVideo" src="video.mp4" loop playsinline muted crossorigin="anonymous"></video>
 
   <script type="module">
     import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.150.0/build/three.module.js';
     import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.150.0/examples/jsm/webxr/ARButton.js';
 
-    // === CONFIG: adjust to real printed marker size ===
-    const MARKER_PX_WIDTH = 2061;
-    const MARKER_PX_HEIGHT = 1435;
-    const MARKER_REAL_WIDTH_M = 0.2061; // 206.1 mm = 0.2061 m (match your printed marker width)
-    const MARKER_ASPECT = MARKER_PX_WIDTH / MARKER_PX_HEIGHT;
-    const MARKER_REAL_HEIGHT_M = MARKER_REAL_WIDTH_M / MARKER_ASPECT; // computed height
+    const MARKER_REAL_WIDTH_M = 0.2061;  // 206.1 mm (match print)
+    const MARKER_REAL_HEIGHT_M = 0.1435; // 143.5 mm (match print)
 
-    let camera, scene, renderer;
-    let videoEl, videoTexture, videoPlane;
-    let refSpace = null;
-    let anchors = new Map(); // keyed by result.index or image id
-
+    let camera, scene, renderer, refSpace;
+    let videoEl, videoTexture, anchors = new Map();
     const enableAudioBtn = document.getElementById('enableAudio');
-    const msg = document.getElementById('msg');
 
     init();
     animate();
@@ -59,90 +55,66 @@
       renderer.setPixelRatio(window.devicePixelRatio);
       renderer.setSize(window.innerWidth, window.innerHeight);
       renderer.xr.enabled = true;
+      renderer.outputEncoding = THREE.sRGBEncoding;
       document.body.appendChild(renderer.domElement);
 
-      // Load marker image -> ImageBitmap
-      let imageBitmap;
-      try {
-        const resp = await fetch('marker.jpg');
-        const blob = await resp.blob();
-        imageBitmap = await createImageBitmap(blob);
-      } catch (e) {
-        console.error('Failed to load marker.jpg', e);
-        alert('Failed to load marker.jpg. Check path and CORS (should be same origin).');
-        return;
-      }
+      // Load marker image as bitmap
+      const imgResponse = await fetch('marker.jpg');
+      const imgBlob = await imgResponse.blob();
+      const imageBitmap = await createImageBitmap(imgBlob);
 
-      // ARButton with image-tracking
       const button = ARButton.createButton(renderer, {
         requiredFeatures: ['image-tracking'],
-        trackedImages: [
-          { image: imageBitmap, widthInMeters: MARKER_REAL_WIDTH_M }
-        ]
+        trackedImages: [{ image: imageBitmap, widthInMeters: MARKER_REAL_WIDTH_M }]
       });
       document.body.appendChild(button);
 
-      // Light
-      const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
-      scene.add(light);
-
-      // Setup video element & texture
       videoEl = document.getElementById('arVideo');
-      videoEl.setAttribute('playsinline', ''); // ensure inline playback on iOS/Android WebView
-      videoEl.muted = true; // keep muted for autoplay (will unmute after user gesture)
       videoEl.loop = true;
+      videoEl.muted = true;
+      videoEl.setAttribute('playsinline', '');
 
       videoTexture = new THREE.VideoTexture(videoEl);
-      videoTexture.generateMipmaps = false;
+      videoTexture.encoding = THREE.sRGBEncoding;
       videoTexture.minFilter = THREE.LinearFilter;
       videoTexture.magFilter = THREE.LinearFilter;
-      videoTexture.format = THREE.RGBAFormat;
-      // color space handling (optional)
-      if (THREE.sRGBEncoding) renderer.outputEncoding = THREE.sRGBEncoding;
 
-      const mat = new THREE.MeshBasicMaterial({ map: videoTexture, toneMapped: false, side: THREE.DoubleSide });
-
-      // Create a single plane mesh (size matches printed marker)
-      const geom = new THREE.PlaneGeometry(MARKER_REAL_WIDTH_M, MARKER_REAL_HEIGHT_M);
-      videoPlane = new THREE.Mesh(geom, mat);
-      // Local transform: plane faces +Z in local space. We need it to lie on top of marker (flat),
-      // so rotate -90deg around X so plane's normal points up (depends on pose orientation).
-      // We'll *not* override pose; instead we'll put the plane inside an anchor object where anchor receives the pose.
-      videoPlane.position.set(0, 0, 0); // center of anchor
-      videoPlane.rotation.x = -Math.PI / 2; // lie flat on the marker surface
-      videoPlane.visible = false; // shown when tracked
-
-      // We're not adding plane to scene yet — it gets added to anchors dynamically.
-
-      // Session start -> request reference space
-      renderer.xr.addEventListener('sessionstart', () => {
-        const session = renderer.xr.getSession();
-        session.requestReferenceSpace('local').then(space => {
-          refSpace = space;
-        });
-
-        // Show enable-audio button once AR started so user can unmute
-        enableAudioBtn.style.display = 'block';
+      const mat = new THREE.MeshBasicMaterial({
+        map: videoTexture,
+        side: THREE.DoubleSide,
+        toneMapped: false
       });
 
-      // enable audio gesture
+      const geom = new THREE.PlaneGeometry(MARKER_REAL_WIDTH_M, MARKER_REAL_HEIGHT_M);
+      const plane = new THREE.Mesh(geom, mat);
+      plane.rotation.x = -Math.PI / 2; // lay flat on image
+      plane.visible = false;
+
+      renderer.xr.addEventListener('sessionstart', () => {
+        const session = renderer.xr.getSession();
+        session.requestReferenceSpace('local').then(space => refSpace = space);
+        enableAudioBtn.style.display = 'block'; // ensure visible
+      });
+
       enableAudioBtn.addEventListener('click', async () => {
         try {
-          // unmute and restart playback if needed
           videoEl.muted = false;
-          // For some browsers you need a user gesture to start audio; call play()
           await videoEl.play();
           enableAudioBtn.style.display = 'none';
-        } catch (err) {
-          console.warn('Audio enable failed:', err);
+        } catch (e) {
+          console.warn('Could not enable audio', e);
         }
       });
 
-      window.addEventListener('resize', onWindowResize);
-    }
+      // Add the video plane to an anchor dynamically
+      renderer.xr.addEventListener('sessionstart', () => {
+        scene.add(plane);
+        anchors.set(0, plane);
+      });
 
-    function onWindowResize() {
-      renderer.setSize(window.innerWidth, window.innerHeight);
+      window.addEventListener('resize', () => {
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
     }
 
     function animate() {
@@ -150,76 +122,29 @@
     }
 
     function render(timestamp, frame) {
-      // Update tracking info / anchors
       if (frame && refSpace && frame.getImageTrackingResults) {
         const results = frame.getImageTrackingResults();
 
-        // keep a set of currently seen indices to remove stale anchors later
-        const seenIndices = new Set();
-
         for (const result of results) {
-          // result.index is index of the tracked image as provided in trackedImages order (0 for single image)
-          const idx = result.index;
-          seenIndices.add(idx);
-
-          const state = result.trackingState; // "tracked" | "emulated" | "not-tracked" (browser strings may vary)
           const pose = frame.getPose(result.imageSpace, refSpace);
+          const plane = anchors.get(result.index);
+          if (!plane) continue;
 
-          if (state === 'tracked' && pose) {
-            // ensure anchor exists
-            let anchor = anchors.get(idx);
-            if (!anchor) {
-              anchor = new THREE.Object3D();
-              anchor.name = 'image-anchor-' + idx;
-              // add a clone of the plane to each anchor (so multiple images could get planes)
-              const planeClone = videoPlane.clone();
-              planeClone.visible = false;
-              // make sure video texture is shared
-              planeClone.material = videoPlane.material;
-              anchor.add(planeClone);
-              anchor.userData.plane = planeClone;
-              scene.add(anchor);
-              anchors.set(idx, anchor);
-            }
+          if (result.trackingState === 'tracked' && pose) {
+            plane.matrix.fromArray(pose.transform.matrix);
+            plane.matrix.decompose(plane.position, plane.quaternion, plane.scale);
+            plane.matrixAutoUpdate = false;
 
-            // apply pose matrix to anchor (anchor space is now at marker)
-            anchor.matrix.fromArray(pose.transform.matrix);
-            anchor.matrix.decompose(anchor.position, anchor.quaternion, anchor.scale);
-            anchor.matrixAutoUpdate = false;
-
-            // show and ensure video is playing
-            const plane = anchor.userData.plane;
-            if (plane) {
-              plane.visible = true;
-              if (videoEl.paused) {
-                // autoplay muted should work; if user hasn't enabled audio we keep it muted
-                videoEl.play().catch(err => {
-                  // play may fail until user gesture on some browsers — that's fine
-                  console.warn('video play attempt failed:', err);
-                });
-              }
-            }
+            plane.visible = true;
+            if (videoEl.paused) videoEl.play().catch(()=>{});
           } else {
-            // not tracked or emulated -> hide plane for that anchor
-            const anchor = anchors.get(idx);
-            if (anchor && anchor.userData && anchor.userData.plane) {
-              anchor.userData.plane.visible = false;
-            }
-          }
-        } // end loop results
-
-        // optional: remove anchors that are not seen for a while
-        for (const [idx, anchorObj] of anchors.entries()) {
-          if (!seenIndices.has(idx)) {
-            // hide plane (do not remove immediately so it can reappear quickly)
-            if (anchorObj.userData.plane) anchorObj.userData.plane.visible = false;
+            plane.visible = false;
           }
         }
       }
 
       renderer.render(scene, camera);
     }
-
   </script>
 </body>
 </html>
